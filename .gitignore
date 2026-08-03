@@ -1,0 +1,16 @@
+# Build / run artifacts
+mlflow.db
+mlruns/
+.DS_Store
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Local editor / OS
+.idea/
+.vscode/
+*.swp
+
+# Generated PDF (source .md is tracked; regenerate via markdown-to-pdf)
+Experian_Auto_Intelligence_Cloud_OnePager.pdf
+.claude/

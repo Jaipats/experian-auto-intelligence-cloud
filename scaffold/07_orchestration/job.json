@@ -1,0 +1,111 @@
+{
+  "name": "experian_auto_intelligence_e2e",
+  "description": "End-to-end Experian Auto Intelligence pipeline: generate gold data -> Visual Prep fusion -> train & register models -> deploy serving endpoints.",
+  "tags": {
+    "project": "experian_auto_intelligence"
+  },
+  "max_concurrent_runs": 1,
+  "environments": [
+    {
+      "environment_key": "serverless_env",
+      "spec": {
+        "client": "3",
+        "dependencies": [
+          "polars",
+          "mimesis",
+          "scikit-learn",
+          "mlflow"
+        ]
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "description": "Generate the three synthetic gold datasets into experian_agent_demo_catalog.auto",
+      "disabled": false,
+      "email_notifications": {},
+      "environment_key": "serverless_env",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/jaideep.patel@databricks.com/experian_auto/notebooks/01_generate_data",
+        "source": "WORKSPACE"
+      },
+      "run_if": "ALL_SUCCESS",
+      "task_key": "generate_data",
+      "timeout_seconds": 0
+    },
+    {
+      "depends_on": [
+        {
+          "task_key": "generate_data"
+        }
+      ],
+      "description": "Run the Visual Prep / Lakeflow fusion pipeline (analytics_market_360, feat_vehicle_fusion)",
+      "disabled": false,
+      "email_notifications": {},
+      "pipeline_task": {
+        "full_refresh": false,
+        "pipeline_id": "c6259e3f-7d6a-4661-a58a-cec0442310de"
+      },
+      "run_if": "ALL_SUCCESS",
+      "task_key": "build_fusion",
+      "timeout_seconds": 0
+    },
+    {
+      "depends_on": [
+        {
+          "task_key": "build_fusion"
+        }
+      ],
+      "description": "Train & register residual / days-to-turn / default-risk models on feat_vehicle_fusion",
+      "disabled": false,
+      "email_notifications": {},
+      "environment_key": "serverless_env",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/jaideep.patel@databricks.com/experian_auto/notebooks/03_train_models",
+        "source": "WORKSPACE"
+      },
+      "run_if": "ALL_SUCCESS",
+      "task_key": "train_models",
+      "timeout_seconds": 0
+    },
+    {
+      "depends_on": [
+        {
+          "task_key": "train_models"
+        }
+      ],
+      "description": "Create/update the three Model Serving endpoints to the latest model versions",
+      "disabled": false,
+      "email_notifications": {},
+      "environment_key": "serverless_env",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/jaideep.patel@databricks.com/experian_auto/notebooks/04_deploy_serving",
+        "source": "WORKSPACE"
+      },
+      "run_if": "ALL_SUCCESS",
+      "task_key": "deploy_serving",
+      "timeout_seconds": 0
+    },
+    {
+      "depends_on": [
+        {
+          "task_key": "build_fusion"
+        }
+      ],
+      "description": "Create/update the Genie space over analytics_market_360 + drilldown tables",
+      "disabled": false,
+      "email_notifications": {},
+      "environment_key": "serverless_env",
+      "notebook_task": {
+        "base_parameters": {
+          "warehouse_id": "527be374a9154957"
+        },
+        "notebook_path": "/Workspace/Users/jaideep.patel@databricks.com/experian_auto/notebooks/05_create_genie_space",
+        "source": "WORKSPACE"
+      },
+      "run_if": "ALL_SUCCESS",
+      "task_key": "create_genie_space",
+      "timeout_seconds": 0
+    }
+  ]
+}

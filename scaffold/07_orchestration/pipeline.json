@@ -1,0 +1,11 @@
+{
+  "name": "experian_auto_fusion",
+  "catalog": "experian_agent_demo_catalog",
+  "schema": "auto",
+  "serverless": true,
+  "continuous": false,
+  "development": true,
+  "libraries": [
+    { "file": { "path": "/Workspace/Users/jaideep.patel@databricks.com/experian_auto/pipeline/fusion_pipeline.sql" } }
+  ]
+}
