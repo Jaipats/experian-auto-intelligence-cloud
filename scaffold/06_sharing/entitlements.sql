@@ -1,47 +1,46 @@
+-- =============================================================================
 -- Per-customer entitlements enforced by Unity Catalog: row filters + column masks.
 -- These are what let ONE set of gold tables serve MANY customers safely.
+--
+-- Model: an `entitlements` table maps each principal (current_user(): a user's
+-- email, or a service principal's application id) to a customer contract —
+-- the states it bought ('*' = all) and a tier ('full' | 'standard').
+--
+--   * Row filter  rf_state(state)        -> a principal sees only its contracted states
+--   * Column mask mask_orig_amount(amt)  -> 'standard' tier sees amounts rounded to $1,000
+--
+-- This file is a TEMPLATE: {catalog} and {schema} are filled in by the job's `setup`
+-- task (scaffold/07_orchestration/notebooks/00_setup.py), which also loads the contract
+-- rows (deployer + app service principal + FULL_ACCESS_PRINCIPALS + TENANT_CONTRACTS).
+-- The Lakeflow pipeline attaches these functions in its DDL, so they must exist before
+-- the pipeline's first run (the job orders setup → generate_data → build_fusion).
+-- =============================================================================
 
--- ---------------------------------------------------------------------------
--- Row filter: a recipient only sees the states/regions in their contract.
--- The mapping table holds (recipient, state) grants; the filter joins to it
--- using the current recipient identity exposed via current_recipient().
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS experian_agent_demo_catalog.auto.contract_geo_grants (
-  recipient STRING,
-  state     STRING
-) COMMENT 'Which states each Delta Sharing recipient is entitled to.';
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.entitlements (
+  principal STRING COMMENT 'Value of current_user(): user email or service-principal application id.',
+  customer  STRING COMMENT 'Customer / contract the principal belongs to.',
+  tier      STRING COMMENT 'Contract tier: full (exact values) or standard (coarsened values).',
+  state     STRING COMMENT 'US state the principal is entitled to, or * for all states.'
+) COMMENT 'Customer data-contract entitlements. Drives the rf_state row filter and mask_orig_amount column mask.';
 
--- Example: Acme dealer group bought CA, NV, AZ.
-MERGE INTO experian_agent_demo_catalog.auto.contract_geo_grants t
-USING (SELECT * FROM VALUES
-  ('acme_dealer_group','CA'),('acme_dealer_group','NV'),('acme_dealer_group','AZ')
-  AS v(recipient,state)) s
-ON t.recipient = s.recipient AND t.state = s.state
-WHEN NOT MATCHED THEN INSERT *;
-
-CREATE OR REPLACE FUNCTION experian_agent_demo_catalog.auto.rf_state(state STRING)
-RETURN EXISTS (
-  SELECT 1 FROM experian_agent_demo_catalog.auto.contract_geo_grants g
-  WHERE g.state = state
-    AND g.recipient = current_recipient('recipient_name')  -- recipient identity
+-- Row filter: a principal only sees the states in its contract (workspace admins see all).
+CREATE OR REPLACE FUNCTION {catalog}.{schema}.rf_state(state STRING)
+RETURNS BOOLEAN
+COMMENT 'Row filter: TRUE when the caller is entitled to this state (entitlements table), or is a workspace admin.'
+RETURN is_member('admins') OR EXISTS (
+  SELECT 1 FROM {catalog}.{schema}.entitlements e
+  WHERE e.principal = current_user()
+    AND (e.state = '*' OR e.state = rf_state.state)
 );
 
-ALTER TABLE experian_agent_demo_catalog.auto.gold_vio_market
-  SET ROW FILTER experian_agent_demo_catalog.auto.rf_state ON (state);
-ALTER TABLE experian_agent_demo_catalog.auto.analytics_market_360
-  SET ROW FILTER experian_agent_demo_catalog.auto.rf_state ON (state);
-ALTER TABLE experian_agent_demo_catalog.auto.gold_lending
-  SET ROW FILTER experian_agent_demo_catalog.auto.rf_state ON (state);
-
--- ---------------------------------------------------------------------------
--- Column mask: coarsen the origination amount for lower tiers (band, not exact).
--- Swap current_recipient() checks for your entitlement model as needed.
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION experian_agent_demo_catalog.auto.mask_orig_amount(amt DOUBLE)
+-- Column mask: exact origination amount for full-tier contracts, $1,000 bands otherwise.
+CREATE OR REPLACE FUNCTION {catalog}.{schema}.mask_orig_amount(amt DOUBLE)
+RETURNS DOUBLE
+COMMENT 'Column mask: exact orig_amount for full-tier contracts / admins, rounded to the nearest $1,000 otherwise.'
 RETURN CASE
-  WHEN is_account_group_member('experian_full_tier') THEN amt
-  ELSE ROUND(amt, -3)  -- round to nearest $1,000 for lower tiers
+  WHEN is_member('admins') OR EXISTS (
+         SELECT 1 FROM {catalog}.{schema}.entitlements e
+         WHERE e.principal = current_user() AND e.tier = 'full')
+  THEN amt
+  ELSE ROUND(amt, -3)
 END;
-
-ALTER TABLE experian_agent_demo_catalog.auto.gold_lending
-  ALTER COLUMN orig_amount SET MASK experian_agent_demo_catalog.auto.mask_orig_amount;

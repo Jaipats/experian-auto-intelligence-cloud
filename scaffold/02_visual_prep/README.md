@@ -8,18 +8,40 @@ visually.
 
 ## What we build here
 
-Four flows, matching the plan:
+One Lakeflow pipeline (`experian_auto_fusion`) owns the whole path from raw files to
+consumption tables:
+
+```
+/Volumes/<catalog>/<schema>/raw/<feed>/batch_<ts>/*.csv   (landed by 01_data)
+   │ Auto Loader: STREAM read_files (incremental, exactly-once per file)
+   ▼
+bronze_vio_market · bronze_autocheck_vin · bronze_lending      streaming tables, raw STRINGs,
+   │                                                            + _source_file/_ingested_at
+   │ typed casts · de-dup (latest file wins per key) · EXPECT constraints
+   ▼
+gold_vio_market · gold_autocheck_vin · gold_lending            materialized views, documented
+   │                                                            columns, UC row filter / mask
+   │ Flow D: fusion (Visual Prep)
+   ▼
+analytics_market_360 (Genie) · feat_vehicle_fusion (ML) · vin_serving (→ Lakebase synced table)
+```
 
 | Flow | Output table | Purpose |
 |---|---|---|
-| A | `gold_vio_market` *(from 01)* | VIO / market statistics — already gold from the generator |
-| B | `gold_autocheck_vin` *(from 01)* | AutoCheck condition features — already gold |
-| C | `gold_lending` *(from 01)* | Lending risk features — already gold |
-| **D** | **`feat_vehicle_fusion`** & **`analytics_market_360`** | **Fuse A+B+C** into a model-ready feature table and a Genie-ready analytics table |
+| A | `bronze_vio_market` → `gold_vio_market` | VIO / market statistics |
+| B | `bronze_autocheck_vin` → `gold_autocheck_vin` | AutoCheck vehicle history |
+| C | `bronze_lending` → `gold_lending` | Lending risk |
+| **D** | **`feat_vehicle_fusion`**, **`analytics_market_360`**, **`vin_serving`** | **Fuse A+B+C** into model-ready, Genie-ready and operational-serving outputs |
 
-Flows A–C are produced directly by the `01_data` generator (already clean, standardized,
-and aggregated). Flow **D** is the fusion step that Visual Prep is ideal for: joining three
-governed products on shared keys, then shaping two consumption-specific outputs.
+**Data quality**: each gold table declares `CONSTRAINT … EXPECT` rules. Malformed keys,
+out-of-range APR/LTV/share/ACCS score and invalid VINs are dropped, and soft checks are
+logged as warnings. Pass/fail counts land in the pipeline event log (see
+`../../evidence/01_lakeflow_ingest.md`).
+
+**Governance in the DDL**: gold, `analytics_market_360` and `feat_vehicle_fusion` attach the
+`rf_state` row filter, and `gold_lending.orig_amount` attaches the `mask_orig_amount` mask.
+Both are declared in the pipeline, so every refresh re-applies them. **Prereq:** the job's
+`setup` task applies `../06_sharing/entitlements.sql` before the pipeline runs, so the functions exist.
 
 - `feat_vehicle_fusion` — **model-ready**: one row per VIN enriched with the local VIO
   demand signal and the lending risk profile for that vehicle's make/model/geo. Feeds
@@ -47,6 +69,7 @@ governed products on shared keys, then shaping two consumption-specific outputs.
 
 ## Files
 
-- `fusion_pipeline.sql` — the declarative pipeline Visual Prep emits (drop into a Lakeflow
-  pipeline, target = `experian_agent_demo_catalog.auto`).
-- `deploy_pipeline.sh` — creates/starts the Lakeflow pipeline via the Databricks CLI.
+- `fusion_pipeline.sql`: the complete declarative pipeline: Auto Loader bronze, governed
+  gold, and the fusion flow Visual Prep emits. Catalog and schema are the pipeline
+  configuration values `${experian.catalog}` / `${experian.schema}`, set by the bundle in
+  `../../resources/experian_auto.pipeline.yml`. That's why the same SQL deploys anywhere.

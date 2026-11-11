@@ -8,12 +8,17 @@
 import json
 from databricks.sdk import WorkspaceClient
 
-CATALOG = "experian_agent_demo_catalog"
-SCHEMA = "auto"
-SPACE_TITLE = "Experian Auto Intelligence — Genie"
-# Warehouse for the space to run its SQL. Override via a job parameter / widget if needed.
-dbutils.widgets.text("warehouse_id", "527be374a9154957")
-WAREHOUSE_ID = dbutils.widgets.get("warehouse_id")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "experian_auto")
+dbutils.widgets.text("warehouse_id", "")
+dbutils.widgets.text("genie_space_title", "Experian Auto Intelligence — Genie")
+dbutils.widgets.text("app_name", "experian-copilot")
+CATALOG = dbutils.widgets.get("catalog").strip()
+SCHEMA = dbutils.widgets.get("schema").strip()
+WAREHOUSE_ID = dbutils.widgets.get("warehouse_id").strip()   # warehouse the space runs SQL on
+SPACE_TITLE = dbutils.widgets.get("genie_space_title").strip()
+APP_NAME = dbutils.widgets.get("app_name").strip()
+assert CATALOG and SCHEMA and WAREHOUSE_ID, "catalog, schema and warehouse_id parameters are required"
 
 w = WorkspaceClient()
 
@@ -110,3 +115,13 @@ else:
 
 print("Genie space ready:", space_id)
 dbutils.jobs.taskValues.set(key="genie_space_id", value=space_id)
+
+# COMMAND ----------
+# Let the Co-Pilot app's service principal run the space (the app resolves it by title).
+try:
+    app_sp = w.apps.get(APP_NAME).service_principal_client_id
+    w.api_client.do("PATCH", f"/api/2.0/permissions/genie/{space_id}", body={
+        "access_control_list": [{"service_principal_name": app_sp, "permission_level": "CAN_RUN"}]})
+    print(f"Granted CAN_RUN on the Genie space to app SP {app_sp}")
+except Exception as e:
+    print(f"NOTE: could not grant the app SP Genie access ({e})")

@@ -45,7 +45,7 @@ SAMPLE_ASK = {
     "thoughts": "Interpreting the request as a ranking by avg_days_to_turn, filtered to "
                 "body_style = 'SUV' and state = 'CA' for the most recent snapshot_month.",
     "sql": "SELECT make, model, model_year, avg_days_to_turn, market_share_pct\n"
-           "FROM experian_agent_demo_catalog.auto.analytics_market_360\n"
+           "FROM <catalog>.experian_auto.analytics_market_360\n"
            "WHERE body_style = 'SUV' AND state = 'CA'\n"
            "ORDER BY avg_days_to_turn ASC LIMIT 5",
     "row_count": 3,

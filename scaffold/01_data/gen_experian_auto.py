@@ -1,7 +1,7 @@
 # =============================================================================
 # Experian Automotive synthetic demo data generator
-# Tier 1 + UC write (Polars + NumPy + Mimesis -> Databricks Connect serverless)
-# Target: experian_agent_demo_catalog.auto
+# Polars + NumPy + Mimesis -> CSV flat files in a UC Volume (raw landing zone)
+# Target: $CATALOG.$SCHEMA  (raw Volume)
 #   1. gold_vio_market    ~6,000 rows   (Vehicles in Operation / market stats)
 #   2. gold_autocheck_vin ~20,000 rows  (AutoCheck vehicle history per VIN)
 #   3. gold_lending       ~30,000 rows  (Automotive credit & lending)
@@ -14,9 +14,10 @@ import string
 from databricks.connect import DatabricksSession
 
 import os
-PROFILE = os.environ.get("DBX_PROFILE", "sp-contoso")
-CATALOG = "experian_agent_demo_catalog"
-SCHEMA = "auto"
+# Local run via Databricks Connect. Configure with env vars (see .env.example).
+PROFILE = os.environ.get("DATABRICKS_CONFIG_PROFILE", "DEFAULT")
+CATALOG = os.environ["CATALOG"]
+SCHEMA = os.environ.get("SCHEMA", "experian_auto")
 
 rng = np.random.default_rng(42)
 
@@ -311,93 +312,42 @@ lending = pl.DataFrame({
 print(f"gold_lending: {lending.height:,} rows")
 
 # ===========================================================================
-# WRITE TO UNITY CATALOG
+# LAND RAW FLAT FILES IN A UNITY CATALOG VOLUME
 # ===========================================================================
+# Experian ships these feeds as flat files. We land each run as a new CSV batch
+# folder under /Volumes/<catalog>/<schema>/raw/<feed>/batch_<ts>/; the Lakeflow
+# pipeline (02_visual_prep/fusion_pipeline.sql) ingests new files incrementally
+# with Auto Loader (read_files) into bronze_* streaming tables, then builds the
+# typed, documented, governed gold_* tables. Table/column comments, data-quality
+# expectations, row filters and column masks all live in the pipeline DDL.
+import datetime as _dt
+
+VOLUME = "raw"
+RAW_ROOT = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
+BATCH = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
 spark = DatabricksSession.builder.profile(PROFILE).serverless().getOrCreate()
-try:
-    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
-except Exception as e:
-    print(f"NOTE: could not CREATE SCHEMA ({e}); assuming it already exists")
+for ddl in (f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}",
+            f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME} COMMENT "
+            "'Raw landing zone: Experian flat-file drops picked up by the Lakeflow pipeline via Auto Loader.'"):
+    try:
+        spark.sql(ddl)
+    except Exception as e:
+        print(f"NOTE: {ddl.split(' IF')[0]} skipped ({e}); assuming it already exists")
 
-# table-level and column-level COMMENTs (for downstream Genie space)
-TABLE_COMMENTS = {
-    "gold_vio_market": "Experian Velocity Vehicles-in-Operation (VIO) market statistics. One row per make/model/model_year/ZIP/snapshot_month, giving new-vehicle registration counts, cumulative vehicles-in-operation, local market share, and inventory turn speed. Join keys: make/model/model_year, state/dma_region, zip_code.",
-    "gold_autocheck_vin": "Experian AutoCheck vehicle-history records, one row per VIN. Captures ownership, accident, title-brand, odometer and auction history plus an AutoCheck-style condition/desirability score (accs_score). Join keys: make/model/model_year, garaged_state, garaged_zip.",
-    "gold_lending": "Experian automotive credit & lending loan-level dataset. One row per originated auto loan with lender, credit tier, APR, term, LTV, payment and delinquency/default performance. Join keys: make/model/model_year, state/region.",
-}
-COLUMN_COMMENTS = {
-    "gold_vio_market": {
-        "vio_id": "Surrogate primary key for the VIO market record.",
-        "make": "Vehicle manufacturer (shared make pool; joins to autocheck/lending).",
-        "model": "Vehicle model name (shared model pool).",
-        "trim": "Trim level of the model.",
-        "model_year": "Model year, 2015-2025.",
-        "body_style": "Body style: SUV, Sedan, Truck, EV, or Van.",
-        "fuel_type": "Fuel/powertrain type: Gas, Hybrid, EV, or Diesel.",
-        "zip_code": "5-digit garaging/registration ZIP (shared 40-ZIP pool).",
-        "dma_region": "Designated Market Area / metro for the ZIP.",
-        "state": "US state abbreviation.",
-        "registration_count": "New vehicle registrations for this cell in the snapshot month.",
-        "vio_count": "Cumulative vehicles in operation (on-road units) for this cell.",
-        "market_share_pct": "Registration share (%) within the state for the snapshot month.",
-        "avg_days_to_turn": "Average dealer days-to-turn (inventory velocity) in days.",
-        "snapshot_month": "First-of-month date the statistics were snapshotted.",
-    },
-    "gold_autocheck_vin": {
-        "vin": "Synthetic 17-character Vehicle Identification Number (no I/O/Q).",
-        "make": "Vehicle manufacturer (shared make pool).",
-        "model": "Vehicle model name (shared model pool).",
-        "trim": "Trim level of the model.",
-        "model_year": "Model year, 2015-2025.",
-        "mileage": "Last reported odometer reading in miles.",
-        "owner_count": "Number of distinct owners on record (1-6).",
-        "accident_count": "Number of reported accidents (0-5).",
-        "title_brand": "Title brand: Clean, Salvage, Rebuilt, or Flood.",
-        "odometer_rollback_flag": "1 if a suspected odometer rollback was detected, else 0.",
-        "auction_count": "Number of times the vehicle passed through auction.",
-        "accs_score": "AutoCheck-style condition/desirability score 0-100; higher is better. Decreases with accidents, owners, mileage, adverse title brands and odometer rollback.",
-        "last_reported_date": "Date of the most recent history event on the VIN.",
-        "garaged_zip": "5-digit ZIP where the vehicle is garaged (shared ZIP pool).",
-        "garaged_state": "US state where the vehicle is garaged.",
-    },
-    "gold_lending": {
-        "loan_id": "Surrogate primary key for the auto loan.",
-        "lender_name": "Originating lender (12-lender pool across banks, captives, credit unions, fintechs).",
-        "lender_type": "Lender category: Bank, Captive, Credit Union, or Fintech.",
-        "make": "Financed vehicle manufacturer (shared make pool).",
-        "model": "Financed vehicle model (shared model pool).",
-        "model_year": "Vehicle model year, 2015-2025.",
-        "region": "US macro region of the borrower (shared region pool).",
-        "state": "US state of the borrower.",
-        "orig_month": "Loan origination month (first-of-month date).",
-        "orig_amount": "Original financed amount in USD.",
-        "apr": "Annual percentage rate (%). Rises with lower credit tier and used vehicles.",
-        "term_months": "Loan term in months (36-84).",
-        "credit_tier": "Borrower credit tier: Super Prime, Prime, Near Prime, or Subprime.",
-        "ltv_pct": "Loan-to-value ratio (%). Higher for lower credit tiers.",
-        "monthly_payment": "Scheduled monthly payment in USD (amortized).",
-        "delinquency_30d_flag": "1 if the loan has ever been 30+ days delinquent, else 0. Rises with lower credit tier.",
-        "default_flag": "1 if the loan has defaulted/charged off, else 0. Rises with lower credit tier.",
-        "new_used": "Whether the financed vehicle is New or Used.",
-    },
-}
 
-def write(df, name):
+def land(df, feed):
+    path = f"{RAW_ROOT}/{feed}/batch_{BATCH}"
     sdf = spark.createDataFrame(df.to_pandas())
-    (sdf.write.format("delta").mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable(f"{CATALOG}.{SCHEMA}.{name}"))
-    fq = f"{CATALOG}.{SCHEMA}.{name}"
-    tc = TABLE_COMMENTS[name].replace("'", "\\'")
-    spark.sql(f"COMMENT ON TABLE {fq} IS '{tc}'")
-    for col, cc in COLUMN_COMMENTS[name].items():
-        cc = cc.replace("'", "\\'")
-        spark.sql(f"ALTER TABLE {fq} ALTER COLUMN {col} COMMENT '{cc}'")
-    n = spark.table(fq).count()
-    print(f"  wrote {fq}: {n:,} rows (+ comments)")
+    (sdf.coalesce(1).write.mode("overwrite")
+        .option("header", "true")
+        .option("timestampFormat", "yyyy-MM-dd'T'HH:mm:ss")
+        .csv(path))
+    print(f"  landed {df.height:,} rows -> {path}")
 
-write(vio, "gold_vio_market")
-write(autocheck, "gold_autocheck_vin")
-write(lending, "gold_lending")
-print("DONE")
+
+land(vio, "vio_market")
+land(autocheck, "autocheck_vin")
+land(lending, "lending")
+print(f"DONE — batch {BATCH}. Run the Lakeflow pipeline to ingest it.")
 spark.stop()

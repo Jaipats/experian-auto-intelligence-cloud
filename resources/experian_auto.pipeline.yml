@@ -1,0 +1,16 @@
+# Lakeflow Spark Declarative Pipeline: raw files → bronze → governed gold → fusion → vin_serving
+resources:
+  pipelines:
+    experian_auto_fusion:
+      name: experian_auto_fusion_${var.schema}
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      serverless: true
+      continuous: false
+      development: false
+      configuration:
+        experian.catalog: ${var.catalog}
+        experian.schema: ${var.schema}
+      libraries:
+        - file:
+            path: ../scaffold/02_visual_prep/fusion_pipeline.sql

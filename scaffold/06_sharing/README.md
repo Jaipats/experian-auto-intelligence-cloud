@@ -7,8 +7,12 @@ layer that turns the datasets into products.
 ## What's here
 
 - `create_share.sql` — create a Delta Share and add the gold + fused tables.
-- `entitlements.sql` — row filters and column masks that enforce per-contract access
-  (e.g. a dealer-group recipient only sees its own states; PII-ish columns masked by tier).
+- `entitlements.sql`: the `entitlements` contract table, plus the `rf_state` row filter and
+  `mask_orig_amount` column mask keyed on `current_user()`. **Applied and verified live**:
+  `sp_contoso` (Contoso Dealer Group, standard tier) sees only CA/NV/AZ with amounts rounded
+  to $1,000, and `sp_northwind` (Northwind Auto Finance, full tier) sees only TX/FL with exact
+  amounts. See `../../evidence/07_unity_catalog_governance.md`. The Lakeflow pipeline attaches
+  the filter and mask in its DDL, so run this file before the first pipeline run.
 - `marketplace_listing.md` — notes for publishing as a Databricks Marketplace listing.
 
 ## Model
@@ -28,38 +32,48 @@ layer that turns the datasets into products.
 | **+ Genie** | above + `analytics_market_360` + access to the Genie space |
 | **+ App** | above + the Co-Pilot app + model endpoints |
 
-## Target for this engagement
+## ⚠️ Permission prerequisite
 
-Customer workspace: **https://eastus2.azuredatabricks.net/** (Azure, East US 2).
-Provider metastore: `aws:us-east-1:c0da88f1-c020-4992-b8c9-c828e556889d` (cross-cloud share — supported).
-
-## ⚠️ Permission prerequisite (blocker encountered)
-
-Creating a share/recipient needs **`CREATE_SHARE` + `CREATE_RECIPIENT` on the metastore**,
-which is a *metastore-admin* privilege — **separate from catalog ownership**. In this
-workspace `jaideep.patel@databricks.com` owns the catalog but is **not** a metastore admin,
-so `databricks shares create` returns:
-
-```
-Error: User does not have CREATE SHARE on Metastore 'metastore_aws_us_east_1'.
-```
-
-A metastore admin must either run `create_share.sh`, or first grant the privileges:
+Creating a share or recipient needs **`CREATE_SHARE` + `CREATE_RECIPIENT` on the metastore**,
+a metastore-admin privilege that is separate from catalog ownership. Without it,
+`databricks shares create` returns `User does not have CREATE SHARE on Metastore '…'`.
+A metastore admin must run `create_share.sh`, or first grant you the privileges:
 
 ```bash
-databricks grants update METASTORE c0da88f1-c020-4992-b8c9-c828e556889d --profile $DBX_PROFILE \
-  --json '{"changes":[{"principal":"jaideep.patel@databricks.com","add":["CREATE_SHARE","CREATE_RECIPIENT"]}]}'
+databricks grants update METASTORE <metastore-id> \
+  --json '{"changes":[{"principal":"<you>","add":["CREATE_SHARE","CREATE_RECIPIENT"]}]}'
 ```
 
-## Apply (once you have the privilege)
+## Entitlements (deployed by the job's `setup` task)
+
+The filter and mask key off `current_user()` (a user's email, or a service principal's
+application id), looked up in `<catalog>.<schema>.entitlements`. The deployer, workspace
+admins, `FULL_ACCESS_PRINCIPALS` and the Co-Pilot app SP are entitled to `*` / `full`, so the
+app, Genie, model training and the pipeline keep full visibility. Demo customers come from
+`TENANT_CONTRACTS` in `.env`:
 
 ```bash
-DBX_PROFILE=fe-vm-experian-agent-demo bash create_share.sh          # create share, add tables, recipient, grant
-databricks sql -e "$(cat entitlements.sql)" --warehouse $WAREHOUSE_ID --profile $DBX_PROFILE   # row/column governance
+TENANT_CONTRACTS='[{"principal":"<sp-application-id>","customer":"Contoso Dealer Group","tier":"standard","states":["CA","NV","AZ"]}]'
+```
+
+The `sync_lakebase` task grants each tenant `SELECT` on `gold_vio_market`, `gold_lending`
+and `analytics_market_360`, and the filter and mask decide what they see. To onboard another
+customer, add it to `TENANT_CONTRACTS` and re-run the job, or `INSERT` rows into the
+`entitlements` table directly. No DDL changes are needed. Evidence of the filter and mask
+working per identity: `../../evidence/07_unity_catalog_governance.md`.
+
+For **Delta Sharing recipients**, add a recipient-aware branch to the functions
+(`current_recipient('…')`) or share a dynamic view, because `current_user()` isn't the
+recipient identity in a share.
+
+## Create the share (needs the privilege above)
+
+```bash
+bash scaffold/06_sharing/create_share.sh     # reads CATALOG / SCHEMA / profile from .env
 ```
 
 `create_share.sh` supports two recipient modes:
-- **Databricks-to-Databricks** — needs the target metastore's sharing id (run
-  `SELECT current_metastore();` in the eastus2 workspace to get `azure:eastus2:<uuid>`).
-- **Open sharing (token)** — works with only the URL; emits an activation link to send the
-  customer. This is the default in the script since we only have the destination URL.
+- **Databricks-to-Databricks**: needs the target metastore's sharing id (run
+  `SELECT current_metastore();` in the customer workspace).
+- **Open sharing (token)**: works with only the workspace URL and prints an activation link
+  to send the customer. This is the script's default.
