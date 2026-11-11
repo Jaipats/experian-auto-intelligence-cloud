@@ -3,3 +3,4 @@ uvicorn[standard]
 databricks-sql-connector
 databricks-sdk
 requests
+psycopg[binary,pool]

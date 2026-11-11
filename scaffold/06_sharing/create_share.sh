@@ -8,15 +8,23 @@
 #      databricks grants update METASTORE <metastore_id> \
 #        --json '{"changes":[{"principal":"<you>","add":["CREATE_SHARE","CREATE_RECIPIENT"]}]}'
 #
-# Provider metastore (this workspace): aws:us-east-1:c0da88f1-c020-4992-b8c9-c828e556889d
-# Target customer workspace:           https://eastus2.azuredatabricks.net/  (Azure, East US 2)
+# Not part of the bundle deploy (it needs metastore-level privileges). Configure via
+# .env at the repo root or the environment:
+#   DATABRICKS_CONFIG_PROFILE  CLI profile          CATALOG / SCHEMA   source tables
+#   SHARE_NAME                 share to create      RECIPIENT_NAME     customer recipient
+#
+# Note: the gold tables carry UC row filters / column masks keyed on current_user().
+# For recipients, extend rf_state / mask_orig_amount with a current_recipient() branch
+# (or share dynamic views) so each recipient is scoped by its contract.
 # =============================================================================
 set -euo pipefail
-P="${DBX_PROFILE:-fe-vm-experian-agent-demo}"
-CAT=experian_agent_demo_catalog
-SCH=auto
-SHARE=experian_auto_share
-RECIPIENT=eastus2_customer
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+[ -f "$ROOT/.env" ] && set -a && . "$ROOT/.env" && set +a
+P="${DATABRICKS_CONFIG_PROFILE:-DEFAULT}"
+CAT="${CATALOG:?set CATALOG}"
+SCH="${SCHEMA:-experian_auto}"
+SHARE="${SHARE_NAME:-experian_auto_share}"
+RECIPIENT="${RECIPIENT_NAME:-demo_customer}"
 
 echo "==> 1. Create the share"
 databricks shares create --profile "$P" --json '{
@@ -39,15 +47,15 @@ databricks shares update "$SHARE" --profile "$P" --json '{
 # ---------------------------------------------------------------------------
 # OPTION A — Databricks-to-Databricks (preferred when both sides are Databricks).
 #   Needs the TARGET metastore's global sharing identifier. Get it FROM the
-#   customer workspace (https://eastus2.azuredatabricks.net/) by running there:
-#       SELECT current_metastore();            -- e.g. azure:eastus2:<uuid>
+#   customer workspace by running there:
+#       SELECT current_metastore();            -- e.g. <cloud>:<region>:<uuid>
 #   or Catalog > Delta Sharing > "Sharing identifier". Then:
 #
 #   databricks recipients create --profile "$P" --json '{
 #     "name":"'"$RECIPIENT"'",
 #     "authentication_type":"DATABRICKS",
-#     "data_recipient_global_metastore_id":"azure:eastus2:<TARGET_METASTORE_UUID>",
-#     "comment":"Customer workspace eastus2.azuredatabricks.net"
+#     "data_recipient_global_metastore_id":"<cloud>:<region>:<TARGET_METASTORE_UUID>",
+#     "comment":"Customer workspace"
 #   }'
 #
 # OPTION B — Open sharing (token-based). Works to ANY workspace with only the URL;
@@ -55,7 +63,7 @@ databricks shares update "$SHARE" --profile "$P" --json '{
 databricks recipients create --profile "$P" --json '{
   "name":"'"$RECIPIENT"'",
   "authentication_type":"TOKEN",
-  "comment":"Customer workspace https://eastus2.azuredatabricks.net/ (open sharing)"
+  "comment":"Customer workspace (open sharing)"
 }'
 
 echo "==> 4. Grant the share to the recipient"
@@ -67,4 +75,4 @@ echo "==> 5. (Open sharing only) fetch the activation link to send the customer"
 databricks recipients get "$RECIPIENT" --profile "$P" \
   | python3 -c "import sys,json;d=json.load(sys.stdin);print('Activation link:', d.get('tokens',[{}])[0].get('activation_url','<pending>'))"
 
-echo "Done. Then apply entitlements.sql for per-recipient row/column governance."
+echo "Done."

@@ -39,16 +39,31 @@ def _invoke(endpoint: str, record: dict):
     return preds[0] if preds else None
 
 
+# The residual / default models were trained on the per-VIN fusion feature set.
+# The operational record carries display fields too, so send only these columns.
+_VIN_FEATURES = [
+    "make", "model", "title_brand", "state", "model_year", "mileage",
+    "owner_count", "accident_count", "auction_count", "accs_score",
+    "local_market_share_pct", "local_avg_days_to_turn", "local_vio_count",
+    "segment_avg_apr", "segment_avg_ltv_pct", "segment_default_rate",
+    "segment_delinquency_rate",
+]
+
+
+def _features(vehicle: dict) -> dict:
+    return {k: vehicle[k] for k in _VIN_FEATURES if k in vehicle}
+
+
 def predict_residual(vehicle: dict):
     try:
-        return round(float(_invoke(ENDPOINT_RESIDUAL, vehicle)), 0)
+        return round(float(_invoke(ENDPOINT_RESIDUAL, _features(vehicle))), 0)
     except Exception:
         return None
 
 
 def predict_default(vehicle: dict):
     try:
-        return round(float(_invoke(ENDPOINT_DEFAULT, vehicle)), 4)
+        return round(float(_invoke(ENDPOINT_DEFAULT, _features(vehicle))), 4)
     except Exception:
         return None
 

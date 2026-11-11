@@ -25,12 +25,14 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
 
-CATALOG = "experian_agent_demo_catalog"
-SCHEMA = "auto"
-PROFILE = os.environ.get("DBX_PROFILE", "fe-vm-experian-agent-demo")
-EXPERIMENT = os.environ.get(
-    "MLFLOW_EXPERIMENT",
-    "/Users/jaideep.patel@databricks.com/experian_auto_models")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "experian_auto")
+dbutils.widgets.text("experiment", "")
+CATALOG = dbutils.widgets.get("catalog").strip()
+SCHEMA = dbutils.widgets.get("schema").strip()
+assert CATALOG and SCHEMA, "catalog and schema parameters are required"
+EXPERIMENT = (dbutils.widgets.get("experiment").strip()
+              or f"/Users/{spark.sql('SELECT current_user()').first()[0]}/experian_auto_models_{SCHEMA}")
 
 # Log experiments to the Databricks WORKSPACE (not a local ./mlruns dir) and
 # register models in Unity Catalog.

@@ -1,8 +1,8 @@
 """Unity Catalog access via a Databricks SQL warehouse."""
 import os
 
-CATALOG = os.environ.get("CATALOG", "experian_agent_demo_catalog")
-SCHEMA = os.environ.get("SCHEMA", "auto")
+CATALOG = os.environ.get("CATALOG", "")
+SCHEMA = os.environ.get("SCHEMA", "experian_auto")
 HOST = os.environ.get("DATABRICKS_HOST", "").replace("https://", "").rstrip("/")
 WAREHOUSE_ID = os.environ.get("DATABRICKS_WAREHOUSE_ID", "")
 TOKEN = os.environ.get("DATABRICKS_TOKEN", "")

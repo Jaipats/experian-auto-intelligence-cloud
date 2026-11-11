@@ -1,0 +1,38 @@
+# "Inventory & Risk Co-Pilot" Databricks App
+resources:
+  apps:
+    copilot:
+      name: ${var.app_name}
+      description: "Experian Auto Intelligence - Inventory & Risk Co-Pilot (Lakebase VIN serving, Model Serving, Genie)"
+      source_code_path: ../scaffold/05_app
+
+      config:
+        command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+        env:
+          - { name: CATALOG, value: "${var.catalog}" }
+          - { name: SCHEMA, value: "${var.schema}" }
+          - { name: DATABRICKS_WAREHOUSE_ID, value_from: sql-warehouse }
+          - { name: GENIE_SPACE_TITLE, value: "${var.genie_space_title}" }
+          - { name: ENDPOINT_RESIDUAL, value: "${var.endpoint_prefix}-residual-value" }
+          - { name: ENDPOINT_DTT, value: "${var.endpoint_prefix}-days-to-turn" }
+          - { name: ENDPOINT_DEFAULT, value: "${var.endpoint_prefix}-default-risk" }
+          # Lakebase: PGHOST/PGUSER/PGPORT/PGDATABASE are injected by the `database` resource below.
+          - { name: ENDPOINT_NAME, value: "projects/${var.lakebase_project}/branches/${var.lakebase_branch}/endpoints/primary" }
+          - { name: PGDATABASE, value: "${var.lakebase_pg_database}" }
+          - { name: PGSSLMODE, value: require }
+          - { name: LAKEBASE_TABLE, value: "${var.schema}.vin_serving_online" }
+
+      # Bindings that exist at deploy time. Model endpoints, the Genie space and UC tables are
+      # created by the job, which grants the app's service principal access to each of them.
+      resources:
+        - name: sql-warehouse
+          description: SQL warehouse for Unity Catalog analytical queries
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: database
+          description: Lakebase Postgres for operational VIN serving
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
+            database: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/databases/${var.lakebase_database_id}
+            permission: CAN_CONNECT_AND_CREATE

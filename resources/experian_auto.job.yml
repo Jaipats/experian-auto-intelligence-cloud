@@ -1,0 +1,84 @@
+# End-to-end orchestration. Every task is idempotent, so re-running the job refreshes the demo.
+resources:
+  jobs:
+    experian_auto_e2e:
+      name: experian_auto_intelligence_e2e_${var.schema}
+      description: >-
+        Experian Auto Intelligence Cloud end to end: setup (schema, Volume, entitlements) →
+        land raw files → Lakeflow ingest/gold/fusion → Lakebase sync → train & register models →
+        deploy serving endpoints → Genie space.
+      tags:
+        project: experian_auto_intelligence
+      max_concurrent_runs: 1
+
+      parameters:
+        - { name: catalog, default: "${var.catalog}" }
+        - { name: schema, default: "${var.schema}" }
+        - { name: warehouse_id, default: "${var.warehouse_id}" }
+        - { name: app_name, default: "${var.app_name}" }
+        - { name: endpoint_prefix, default: "${var.endpoint_prefix}" }
+        - { name: genie_space_title, default: "${var.genie_space_title}" }
+        - { name: lakebase_project, default: "${var.lakebase_project}" }
+        - { name: lakebase_branch, default: "${var.lakebase_branch}" }
+        - { name: lakebase_pg_database, default: "${var.lakebase_pg_database}" }
+        - { name: full_access_principals, default: "${var.full_access_principals}" }
+        - { name: tenant_contracts, default: "${var.tenant_contracts}" }
+
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "3"
+            dependencies:
+              - polars
+              - mimesis
+              - scikit-learn
+              - mlflow
+
+      tasks:
+        - task_key: setup
+          description: Create schema + raw Volume; apply the entitlements table, row filter and column mask
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: ../scaffold/07_orchestration/notebooks/00_setup.py
+
+        - task_key: generate_data
+          depends_on: [{ task_key: setup }]
+          description: Land the three synthetic Experian flat-file feeds as CSV batches in the raw Volume
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: ../scaffold/07_orchestration/notebooks/01_generate_data.py
+
+        - task_key: build_fusion
+          depends_on: [{ task_key: generate_data }]
+          description: "Lakeflow pipeline: Auto Loader → bronze_* → governed gold_* → analytics_market_360, feat_vehicle_fusion, vin_serving"
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.experian_auto_fusion.id}
+            full_refresh: false
+
+        - task_key: sync_lakebase
+          depends_on: [{ task_key: build_fusion }]
+          description: UC grants for the app and tenants; create/refresh the Lakebase synced table; Postgres grants
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: ../scaffold/07_orchestration/notebooks/06_sync_lakebase.py
+
+        - task_key: train_models
+          depends_on: [{ task_key: build_fusion }]
+          description: Train & register residual / days-to-turn / default-risk models on feat_vehicle_fusion
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: ../scaffold/07_orchestration/notebooks/03_train_models.py
+
+        - task_key: deploy_serving
+          depends_on: [{ task_key: train_models }]
+          description: Create/update the three Model Serving endpoints to the latest versions; grant the app CAN_QUERY
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: ../scaffold/07_orchestration/notebooks/04_deploy_serving.py
+
+        - task_key: create_genie_space
+          depends_on: [{ task_key: build_fusion }]
+          description: Create/update the Genie space with instructions and certified SQL; grant the app CAN_RUN
+          environment_key: serverless_env
+          notebook_task:
+            notebook_path: ../scaffold/07_orchestration/notebooks/05_create_genie_space.py

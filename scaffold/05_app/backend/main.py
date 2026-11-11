@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, models, genie, data
+from . import db, models, genie, data, lakebase
 
 app = FastAPI(title="Experian Auto Intelligence — Inventory & Risk Co-Pilot")
 
@@ -28,7 +28,8 @@ FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 @app.get("/api/health")
 def health():
     return {"status": "ok", "sql_configured": db.is_configured(),
-            "genie_configured": genie.is_configured()}
+            "genie_configured": genie.is_configured(),
+            "lakebase_configured": lakebase.is_configured()}
 
 
 @app.get("/api/acquire")
@@ -57,19 +58,46 @@ def acquire(state: str = "CA", body_style: str = "SUV", limit: int = 10):
 
 @app.get("/api/vin/{vin}")
 def vin_detail(vin: str):
-    """Per-VIN condition + residual value + segment default risk."""
+    """Per-VIN condition + residual value + segment default risk.
+
+    Served from Lakebase Postgres (operational hot path, sub-ms PK lookup) when
+    configured; falls back to the Unity Catalog SQL warehouse, then to sample data.
+    """
+    served_by = None
+    vehicle = None
     try:
-        rows = db.query(
-            f"SELECT * FROM {db.tbl('gold_autocheck_vin')} WHERE vin = %(vin)s LIMIT 1",
-            {"vin": vin},
-        )
-        if not rows:
+        # 1) operational serving from Lakebase (preferred)
+        if lakebase.is_configured():
+            vehicle = lakebase.get_vin(vin)
+            served_by = "lakebase"
+        # 2) fall back to the analytical warehouse if Lakebase is unavailable
+        if vehicle is None and served_by != "lakebase":
+            rows = db.query(
+                f"SELECT * FROM {db.tbl('gold_autocheck_vin')} WHERE vin = %(vin)s LIMIT 1",
+                {"vin": vin},
+            )
+            vehicle = rows[0] if rows else None
+            served_by = "warehouse"
+        if vehicle is None:
             return JSONResponse({"error": "VIN not found"}, status_code=404)
-        vehicle = rows[0]
         vehicle["predicted_residual_value"] = models.predict_residual(vehicle)
         vehicle["segment_default_risk"] = models.predict_default(vehicle)
-        return {"source": "live", "vehicle": vehicle}
+        return {"source": "live", "served_by": served_by, "vehicle": vehicle}
     except Exception as e:
+        # last-resort warehouse attempt if Lakebase raised, else sample
+        try:
+            rows = db.query(
+                f"SELECT * FROM {db.tbl('gold_autocheck_vin')} WHERE vin = %(vin)s LIMIT 1",
+                {"vin": vin},
+            )
+            if rows:
+                vehicle = rows[0]
+                vehicle["predicted_residual_value"] = models.predict_residual(vehicle)
+                vehicle["segment_default_risk"] = models.predict_default(vehicle)
+                return {"source": "live", "served_by": "warehouse",
+                        "note": f"lakebase fallback: {e}", "vehicle": vehicle}
+        except Exception:
+            pass
         return {"source": "sample", "note": str(e), "vehicle": data.SAMPLE_VIN}
 
 

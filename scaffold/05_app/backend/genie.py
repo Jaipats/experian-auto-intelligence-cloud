@@ -16,7 +16,12 @@ from databricks.sdk.core import Config
 # In Databricks Apps the host env var is a bare hostname — normalize to a full URL.
 _raw_host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
 HOST = _raw_host if _raw_host.startswith("http") else (f"https://{_raw_host}" if _raw_host else "")
+# Either pin the space id, or let the app resolve it by title at runtime. The bundle's
+# job creates the space (07_orchestration/notebooks/05_create_genie_space.py) and grants
+# the app's service principal CAN_RUN, so a fresh deployment needs no hardcoded id.
 SPACE_ID = os.environ.get("GENIE_SPACE_ID", "")
+SPACE_TITLE = os.environ.get("GENIE_SPACE_TITLE", "")
+_resolved_space_id = None
 
 # Human-friendly labels for Genie's internal statuses (shown in the UI stepper).
 STATUS_LABELS = {
@@ -31,7 +36,31 @@ STATUS_LABELS = {
 
 
 def is_configured() -> bool:
-    return bool(HOST and SPACE_ID)
+    return bool(HOST and (SPACE_ID or SPACE_TITLE))
+
+
+def _space_id() -> str:
+    """Pinned GENIE_SPACE_ID, else the space whose title is GENIE_SPACE_TITLE (cached)."""
+    global _resolved_space_id
+    if SPACE_ID:
+        return SPACE_ID
+    if _resolved_space_id:
+        return _resolved_space_id
+    page_token = None
+    while True:
+        params = {"page_token": page_token} if page_token else {}
+        r = requests.get(f"{HOST}/api/2.0/genie/spaces", headers=_headers(),
+                         params=params, timeout=30)
+        r.raise_for_status()
+        body = r.json()
+        for sp in body.get("spaces", []):
+            if sp.get("title") == SPACE_TITLE:
+                _resolved_space_id = sp.get("space_id") or sp.get("id")
+                return _resolved_space_id
+        page_token = body.get("next_page_token")
+        if not page_token:
+            raise RuntimeError(f"Genie space titled {SPACE_TITLE!r} not found "
+                               "(has the job's create_genie_space task run?)")
 
 
 def _headers():
@@ -44,7 +73,7 @@ def _headers():
 
 
 def _base():
-    return f"{HOST}/api/2.0/genie/spaces/{SPACE_ID}"
+    return f"{HOST}/api/2.0/genie/spaces/{_space_id()}"
 
 
 def _start(question: str, conversation_id: str | None):
@@ -124,7 +153,7 @@ def _parse_message(cid: str, mid: str, msg: dict) -> dict:
 def ask(question: str, conversation_id: str | None = None) -> dict:
     """Blocking: start a question, poll to completion, return the full payload."""
     if not is_configured():
-        raise RuntimeError("Genie not configured (set GENIE_SPACE_ID / DATABRICKS_HOST)")
+        raise RuntimeError("Genie not configured (set GENIE_SPACE_ID or GENIE_SPACE_TITLE, and DATABRICKS_HOST)")
     cid, mid = _start(question, conversation_id)
     for _ in range(60):
         msg = _get_message(cid, mid)

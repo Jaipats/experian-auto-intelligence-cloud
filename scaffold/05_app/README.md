@@ -15,39 +15,39 @@ Conversations API.
 
 ## Local dev
 
-```bash
-cd app/backend
-uv run --with fastapi --with uvicorn --with databricks-sql-connector \
-  --with databricks-sdk --with requests \
-  uvicorn main:app --reload --port 8000
-# open http://localhost:8000
-```
-
-Set env (see `app.yaml` for the deployed equivalents):
+The app is deployed by the bundle (`../../resources/copilot.app.yml`), which sets its env
+(catalog/schema, warehouse, endpoint names, Genie space title, Lakebase table) and its
+resource bindings (SQL warehouse + Lakebase Postgres). The job grants the app's service
+principal `SELECT` on the tables, `CAN_QUERY` on the endpoints, `CAN_RUN` on the Genie space
+and `SELECT` on the Lakebase synced table.
 
 ```bash
-export DATABRICKS_HOST=https://fevm-experian-agent-demo.cloud.databricks.com
-export DATABRICKS_WAREHOUSE_ID=<serverless-sql-warehouse-id>
-export GENIE_SPACE_ID=<genie-space-id>
-export CATALOG=experian_agent_demo_catalog
-export SCHEMA=auto
-# auth: `databricks auth login` profile, or DATABRICKS_TOKEN
+databricks bundle run copilot      # (re)deploy the app source and start it
 ```
 
-## Deploy as a Databricks App
+## Layout
+
+```
+05_app/
+├── requirements.txt
+├── backend/          FastAPI: main.py (routes), db.py (SQL warehouse), lakebase.py (Postgres pool),
+│                     models.py (Model Serving), genie.py (Genie Conversations API), data.py (samples)
+└── frontend/         index.html + app.js (Experian-branded UI, Genie transparency panel)
+```
+
+## Local dev
 
 ```bash
-databricks apps create experian-copilot --profile fe-vm-experian-agent-demo
-databricks sync ./app /Workspace/Users/<you>/experian-copilot --profile fe-vm-experian-agent-demo
-databricks apps deploy experian-copilot \
-  --source-code-path /Workspace/Users/<you>/experian-copilot \
-  --profile fe-vm-experian-agent-demo
+cd scaffold/05_app
+export DATABRICKS_CONFIG_PROFILE=<profile> DATABRICKS_HOST=https://<workspace-host>
+export DATABRICKS_WAREHOUSE_ID=<warehouse-id> CATALOG=<catalog> SCHEMA=experian_auto
+export GENIE_SPACE_TITLE="Experian Auto Intelligence — Genie"   # or GENIE_SPACE_ID=<id>
+uv run --with fastapi --with "uvicorn[standard]" --with databricks-sql-connector \
+  --with databricks-sdk --with requests --with "psycopg[binary,pool]" \
+  uvicorn backend.main:app --reload --port 8000
+# open http://localhost:8000. Lakebase is optional locally: without PGHOST the VIN lookup
+# falls back to the SQL warehouse, and without any config the UI shows sample rows.
 ```
 
-The app's service principal needs `SELECT` on the `auto` schema tables, `CAN QUERY` on the
-serving endpoints, and `CAN RUN` on the Genie Space. `app.yaml` declares the resource
-bindings and env.
-
-> This is a scaffold: the SQL and serving/Genie calls are wired and will run once the
-> tables (01), pipeline (02), Genie space (03), and endpoints (04) exist. Until then the
-> backend falls back to illustrative sample rows so the UI is demoable standalone.
+> The serving endpoints scale to zero. The first VIN lookup after they've been idle can
+> come back without predictions while they warm up; retry after about a minute.

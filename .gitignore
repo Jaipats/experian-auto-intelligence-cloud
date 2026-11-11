@@ -1,16 +1,22 @@
+# Local config / secrets
+.env
+.databricks/
+.claude/
+.isaac/
+
 # Build / run artifacts
 mlflow.db
 mlruns/
-.DS_Store
 **/__pycache__/
 *.pyc
 *.pyo
+node_modules/
 
-# Local editor / OS
+# OS / editor
+.DS_Store
 .idea/
 .vscode/
 *.swp
 
 # Generated PDF (source .md is tracked; regenerate via markdown-to-pdf)
 Experian_Auto_Intelligence_Cloud_OnePager.pdf
-.claude/
